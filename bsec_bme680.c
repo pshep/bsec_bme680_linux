@@ -27,14 +27,21 @@
 
 /* definitions */
 
-#define DESTZONE "TZ=Europe/Berlin"
-#define temp_offset (5.0f)
+#define DESTZONE "TZ=Europe/London"
+#define temp_offset (0.0f)
 #define sample_rate_mode (BSEC_SAMPLE_RATE_LP)
+#define ERR_MAX (5)
+#define MAX_FILE_PATH_LEN (1024)
+#define MAX_OUT_STR_LEN (4096)
 
 int g_i2cFid; // I2C Linux device handle
-int i2c_address = BME680_I2C_ADDR_PRIMARY;
+int i2c_address = BME680_I2C_ADDR_SECONDARY;
 char *filename_state = "bsec_iaq.state";
 char *filename_config = "bsec_iaq.config";
+int ErrCount = 0;
+char OutFilePath[MAX_FILE_PATH_LEN];
+int FileGood = 0;
+
 
 /* functions */
 
@@ -45,6 +52,10 @@ void i2cOpen()
   if (g_i2cFid < 0) {
     perror("i2cOpen");
     exit(1);
+  }
+  else
+  {
+    ErrCount = 0;
   }
 }
 
@@ -60,6 +71,10 @@ void i2cSetAddress(int address)
   if (ioctl(g_i2cFid, I2C_SLAVE, address) < 0) {
     perror("i2cSetAddress");
     exit(1);
+  }
+  else
+  {
+    ErrCount = 0;
   }
 }
 
@@ -88,7 +103,12 @@ int8_t bus_write(uint8_t dev_addr, uint8_t reg_addr, uint8_t *reg_data_ptr,
   if (write(g_i2cFid, reg, data_len+1) != data_len+1) {
     perror("user_i2c_write");
     rslt = 1;
-    exit(1);
+    
+    ErrCount++;
+  }
+  else
+  {
+    ErrCount = 0;
   }
 
   return rslt;
@@ -116,11 +136,21 @@ int8_t bus_read(uint8_t dev_addr, uint8_t reg_addr, uint8_t *reg_data_ptr,
   if (write(g_i2cFid, reg, 1) != 1) {
     perror("user_i2c_read_reg");
     rslt = 1;
+    ErrCount++;
+  }
+  else
+  {
+    ErrCount = 0;
   }
 
   if (read(g_i2cFid, reg_data_ptr, data_len) != data_len) {
     perror("user_i2c_read_data");
     rslt = 1;
+    ErrCount++;
+  }
+  else
+  {
+    ErrCount = 0;
   }
 
   return rslt;
@@ -187,6 +217,10 @@ void output_ready(int64_t timestamp, float iaq, uint8_t iaq_accuracy,
                   float static_iaq, float co2_equivalent,
                   float breath_voc_equivalent)
 {
+  FILE *file_out_ptr = NULL;
+  char OutString[MAX_OUT_STR_LEN];
+  int StrLen = 0;
+  
   //int64_t timestamp_s = timestamp / 1000000000;
   ////int64_t timestamp_ms = timestamp / 1000;
 
@@ -197,21 +231,36 @@ void output_ready(int64_t timestamp, float iaq, uint8_t iaq_accuracy,
    */
   time_t t = time(NULL);
   struct tm tm = *localtime(&t);
-
-  printf("%d-%02d-%02d %02d:%02d:%02d,", tm.tm_year + 1900,tm.tm_mon + 1,
+  
+  StrLen = snprintf(OutString, MAX_OUT_STR_LEN, "%d-%02d-%02d %02d:%02d:%02d", tm.tm_year + 1900,tm.tm_mon + 1,
          tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec); /* localtime */
-  printf("[IAQ (%d)]: %.2f", iaq_accuracy, iaq);
-  printf(",[T degC]: %.2f,[H %%rH]: %.2f,[P hPa]: %.2f", temperature,
+  StrLen += snprintf(&OutString[StrLen], (MAX_OUT_STR_LEN-StrLen), ", [IAQ (%d)]: %.2f", iaq_accuracy, iaq);
+  StrLen += snprintf(&OutString[StrLen], (MAX_OUT_STR_LEN-StrLen), ", [T degC]: %.2f, [H %%rH]: %.2f, [P hPa]: %.2f", temperature,
          humidity,pressure / 100);
-  printf(",[G Ohms]: %.0f", gas);
-  printf(",[S]: %d", bsec_status);
-  //printf(",[static IAQ]: %.2f", static_iaq);
-  printf(",[eCO2 ppm]: %.15f", co2_equivalent);
-  printf(",[bVOCe ppm]: %.25f", breath_voc_equivalent);
-  //printf(",%" PRId64, timestamp);
-  //printf(",%" PRId64, timestamp_ms);
-  printf("\r\n");
-  fflush(stdout);
+  StrLen += snprintf(&OutString[StrLen], (MAX_OUT_STR_LEN-StrLen), ", [G Ohms]: %.0f", gas);
+  StrLen += snprintf(&OutString[StrLen], (MAX_OUT_STR_LEN-StrLen), ", [S]: %d", bsec_status);
+  //StrLen += snprintf(&OutString[StrLen], (MAX_OUT_STR_LEN-StrLen), ", [static IAQ]: %.2f", static_iaq);
+  StrLen += snprintf(&OutString[StrLen], (MAX_OUT_STR_LEN-StrLen), ", [eCO2 ppm]: %.6f", co2_equivalent);
+  StrLen += snprintf(&OutString[StrLen], (MAX_OUT_STR_LEN-StrLen), ", [bVOCe ppm]: %.6f", breath_voc_equivalent);
+  //StrLen += snprintf(&OutString[StrLen], (MAX_OUT_STR_LEN-StrLen), ", %", PRId64, timestamp);
+  //StrLen += snprintf(&OutString[StrLen], (MAX_OUT_STR_LEN-StrLen), ", %", PRId64, timestamp_ms);
+  snprintf(&OutString[StrLen], (MAX_OUT_STR_LEN-StrLen), "\r\n");
+  
+  if ( FileGood )
+  {
+    /* (Over-) Write complete line to the file */
+    file_out_ptr = fopen( OutFilePath,"w+" );
+    if ( NULL != file_out_ptr )
+    {
+      fwrite(OutString,strlen(OutString),1,file_out_ptr);
+      fclose( file_out_ptr );
+    }
+  }
+  else
+  {
+    printf(OutString);
+    fflush(stdout);
+  }
 }
 
 /*
@@ -320,34 +369,66 @@ uint32_t config_load(uint8_t *config_buffer, uint32_t n_buffer)
  *
  * return      result of the processing
  */
-int main()
+int main(int argc, char *argv[] )
 {
+  FILE *file_out_ptr = NULL;
+  
+  if ( 2 == argc)
+  {
+    /* check path valid */
+    strncpy( OutFilePath, argv[1], MAX_FILE_PATH_LEN );
+    
+    file_out_ptr = fopen( OutFilePath,"w+" );
+   
+    if ( NULL == file_out_ptr )
+    {
+      /* bad file */
+      perror("Error opening output file for writing");
+      exit(1);
+    }
+    else
+    { 
+      FileGood = 1;  
+      fclose(file_out_ptr);
+    }
+  }
+  else
+  {
+    FileGood = 0;
+    /* Print to Stdout */
+  }
+  
   putenv(DESTZONE); // Switch to destination time zone
 
-  i2cOpen();
-  i2cSetAddress(i2c_address);
+  while (1)
+  {
+    i2cOpen();
+    i2cSetAddress(i2c_address);
 
-  return_values_init ret;
+    return_values_init ret;
 
-  ret = bsec_iot_init(sample_rate_mode, temp_offset, bus_write, bus_read,
-                      _sleep, state_load, config_load);
-  if (ret.bme680_status) {
-    /* Could not intialize BME680 */
-    return (int)ret.bme680_status;
-  } else if (ret.bsec_status) {
-    /* Could not intialize BSEC library */
-    return (int)ret.bsec_status;
+    ret = bsec_iot_init(sample_rate_mode, temp_offset, bus_write, bus_read,
+                        _sleep, state_load, config_load);
+    if (ret.bme680_status) {
+      /* Could not intialize BME680 */
+      return (int)ret.bme680_status;
+    } else if (ret.bsec_status) {
+      /* Could not intialize BSEC library */
+      return (int)ret.bsec_status;
+    }
+
+    /* Call to endless loop function which reads and processes data based on
+     * sensor settings.
+     * State is saved every 10.000 samples, which means every 10.000 * 3 secs
+     * = 500 minutes (depending on the config).
+     *
+     */
+    bsec_iot_loop(_sleep, get_timestamp_us, output_ready, state_save, 10000);
+
+    i2cClose();
   }
-
-  /* Call to endless loop function which reads and processes data based on
-   * sensor settings.
-   * State is saved every 10.000 samples, which means every 10.000 * 3 secs
-   * = 500 minutes (depending on the config).
-   *
-   */
-  bsec_iot_loop(_sleep, get_timestamp_us, output_ready, state_save, 10000);
-
-  i2cClose();
+  
+  
   return 0;
 }
 
